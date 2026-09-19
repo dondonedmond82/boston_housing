@@ -6,7 +6,6 @@ import panel as pn
 import plotly.express as px
 import plotly.graph_objects as go
 
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
@@ -15,13 +14,11 @@ from sklearn.model_selection import (
     ShuffleSplit,
     KFold,
     train_test_split,
-    learning_curve,
     validation_curve,
     cross_val_score,
     GridSearchCV,
 )
 from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.feature_extraction.text import TfidfVectorizer
 
 warnings.filterwarnings("ignore")
 
@@ -63,6 +60,7 @@ def load_data():
 
 df = load_data()
 numeric_cols = ["RM", "LSTAT", "PTRATIO", "MEDV"]
+TIER_ORDER = ["Affordable", "Mid-Range", "Luxury"]
 
 
 # ---------------------------------------------------------
@@ -70,8 +68,8 @@ numeric_cols = ["RM", "LSTAT", "PTRATIO", "MEDV"]
 # ---------------------------------------------------------
 price_tier_select = pn.widgets.MultiSelect(
     name="Select Price Tiers",
-    options=list(df["Price_Tier"].unique()),
-    value=list(df["Price_Tier"].unique()),
+    options=TIER_ORDER,
+    value=TIER_ORDER,
 )
 
 rm_slider = pn.widgets.RangeSlider(
@@ -107,9 +105,23 @@ gs_min_samples_split = pn.widgets.MultiChoice(
 
 
 def filter_dataframe(tiers, rm_range):
+    if not tiers:
+        return df.iloc[0:0]
     filtered = df[df["Price_Tier"].isin(tiers)]
     filtered = filtered[(filtered["RM"] >= rm_range[0]) & (filtered["RM"] <= rm_range[1])]
     return filtered
+
+
+def _empty_notice(title):
+    """Standard placeholder figure/message when a filter leaves no rows."""
+    fig = go.Figure()
+    fig.update_layout(
+        title=f"{title} — no data for current filters",
+        annotations=[dict(text="No rows match the selected filters",
+                           xref="paper", yref="paper", showarrow=False, font=dict(size=14))],
+        template="plotly_white",
+    )
+    return fig
 
 
 # ---------------------------------------------------------
@@ -117,6 +129,8 @@ def filter_dataframe(tiers, rm_range):
 # ---------------------------------------------------------
 def get_table(tiers, rm_range):
     filtered = filter_dataframe(tiers, rm_range)
+    if filtered.empty:
+        return pn.pane.Markdown("**No data for current filters.**")
     stats = filtered[numeric_cols].describe().T[["count", "mean", "std", "min", "50%", "max"]]
     stats = stats.reset_index().rename(columns={"index": "Indicator", "50%": "median"})
     return pn.widgets.Tabulator(stats, pagination="remote", page_size=10, height=250)
@@ -124,6 +138,8 @@ def get_table(tiers, rm_range):
 
 def get_pie_chart(tiers, rm_range):
     filtered = filter_dataframe(tiers, rm_range)
+    if filtered.empty:
+        return _empty_notice("Price Tier Distribution")
     counts = filtered["Price_Tier"].value_counts().reset_index()
     fig = px.pie(
         counts, values="count", names="Price_Tier",
@@ -134,23 +150,31 @@ def get_pie_chart(tiers, rm_range):
     return fig
 
 
-def get_bar_chart(tiers, rm_range):
+def get_bar_chart(tiers, rm_range, target_col="MEDV"):
     filtered = filter_dataframe(tiers, rm_range)
-    avg_df = filtered.groupby("Price_Tier")["MEDV"].mean().reset_index()
+    if filtered.empty:
+        return _empty_notice(f"Mean {target_col} by Tier")
+    avg_df = filtered.groupby("Price_Tier", observed=True)[target_col].mean().reset_index()
     fig = px.bar(
-        avg_df, x="Price_Tier", y="MEDV",
-        title="Mean Housing Price by Tier ($)",
+        avg_df, x="Price_Tier", y=target_col,
+        title=f"Mean {target_col} by Tier",
         color="Price_Tier", template="plotly_white"
     )
     return fig
 
 
-def get_scatter_plot(tiers, rm_range):
+def get_scatter_plot(tiers, rm_range, target_col="MEDV"):
     filtered = filter_dataframe(tiers, rm_range)
+    if filtered.empty:
+        return _empty_notice(f"LSTAT vs. {target_col}")
+    # Pick an x-axis and a bubble-size feature that aren't the same as the target
+    other_cols = [c for c in numeric_cols if c != target_col]
+    x_col = "LSTAT" if target_col != "LSTAT" else other_cols[0]
+    size_col = "RM" if target_col != "RM" and x_col != "RM" else other_cols[-1]
     fig = px.scatter(
-        filtered, x="LSTAT", y="MEDV",
-        size="RM", color="Price_Tier",
-        title="LSTAT vs. MEDV (Size = Avg Rooms)",
+        filtered, x=x_col, y=target_col,
+        size=size_col, color="Price_Tier",
+        title=f"{x_col} vs. {target_col} (Size = {size_col})",
         template="plotly_white"
     )
     return fig
@@ -158,6 +182,8 @@ def get_scatter_plot(tiers, rm_range):
 
 def get_heatmap(tiers, rm_range):
     filtered = filter_dataframe(tiers, rm_range)
+    if len(filtered) < 2:
+        return _empty_notice("Feature Correlation Matrix")
     corr = filtered[numeric_cols].corr()
     fig = px.imshow(
         corr, text_auto=".2f",
@@ -213,7 +239,7 @@ def run_linear_vs_polynomial_regression(target_col):
             pn.indicators.Number(name="Square (Poly) R²", value=poly_r2, format="{value:.3f}"),
             pn.indicators.Number(name="Square (Poly) RMSE", value=poly_rmse, format="{value:.2f}"),
         ),
-        pn.pane.Plotly(fig),
+        pn.pane.Plotly(fig, sizing_mode="stretch_width", height=450),
     )
 
 
@@ -242,7 +268,7 @@ def run_kfold_cv(target_col, k_folds):
 
     return pn.Column(
         pn.pane.Markdown(f"### K-Fold Cross-Validation Metrics\n- **Mean Score:** `{scores.mean():.4f}` | **Std Dev:** `{scores.std():.4f}`"),
-        pn.Row(table, pn.pane.Plotly(fig))
+        pn.Row(table, pn.pane.Plotly(fig, sizing_mode="stretch_width", height=350))
     )
 
 
@@ -259,7 +285,7 @@ def get_model_complexity_and_fit_diagnostics(target_col, max_depth_limit):
     depth_range = np.arange(1, max_depth_limit + 1)
 
     train_scores, test_scores = validation_curve(
-        DecisionTreeRegressor(), X, y,
+        DecisionTreeRegressor(random_state=42), X, y,
         param_name="max_depth", param_range=depth_range, cv=cv, scoring="r2"
     )
 
@@ -288,7 +314,7 @@ def get_model_complexity_and_fit_diagnostics(target_col, max_depth_limit):
 
     return pn.Column(
         pn.pane.Alert(fit_status, alert_type=alert_type),
-        pn.pane.Plotly(fig)
+        pn.pane.Plotly(fig, sizing_mode="stretch_width", height=450)
     )
 
 
@@ -306,7 +332,7 @@ def run_grid_search_lab(target_col, depth_range, min_splits):
 
     param_grid = {
         "max_depth": list(range(depth_range[0], depth_range[1] + 1)),
-        "min_samples_split": [int(x) for x in min_splits]
+        "min_samples_split": sorted(int(x) for x in min_splits)
     }
 
     grid_search = GridSearchCV(
@@ -338,7 +364,7 @@ def run_grid_search_lab(target_col, depth_range, min_splits):
 
     return pn.Column(
         pn.pane.Markdown(solution_md),
-        pn.pane.Plotly(fig)
+        pn.pane.Plotly(fig, sizing_mode="stretch_width", height=450)
     )
 
 
@@ -362,12 +388,12 @@ sidebar = pn.Column(
 tabs = pn.Tabs(
     ("📊 Statistical Analytics", pn.Column(
         pn.Row(
-            pn.pane.Plotly(pn.bind(get_bar_chart, price_tier_select, rm_slider)),
-            pn.pane.Plotly(pn.bind(get_pie_chart, price_tier_select, rm_slider))
+            pn.pane.Plotly(pn.bind(get_bar_chart, price_tier_select, rm_slider, target_var_select), height=380),
+            pn.pane.Plotly(pn.bind(get_pie_chart, price_tier_select, rm_slider), height=380)
         ),
         pn.Row(
-            pn.pane.Plotly(pn.bind(get_scatter_plot, price_tier_select, rm_slider)),
-            pn.pane.Plotly(pn.bind(get_heatmap, price_tier_select, rm_slider))
+            pn.pane.Plotly(pn.bind(get_scatter_plot, price_tier_select, rm_slider, target_var_select), height=380),
+            pn.pane.Plotly(pn.bind(get_heatmap, price_tier_select, rm_slider), height=380)
         ),
         pn.bind(get_table, price_tier_select, rm_slider)
     )),
