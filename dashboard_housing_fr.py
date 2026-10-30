@@ -12,7 +12,7 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import (
     ShuffleSplit,
-    KPli,
+    KFold,
     train_test_split,
     validation_curve,
     cross_val_score,
@@ -336,7 +336,7 @@ def run_kfold_cv(target_col, k_folds):
     X = ml_df.drop(columns=[target_col])
     y = ml_df[target_col]
 
-    kf = KPli(n_splits=k_folds, shuffle=True, random_state=42)
+    kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
     model = DecisionTreeRegressor(max_depth=5, random_state=42)
     scores = cross_val_score(model, X, y, cv=kf, scoring="r2")
 
